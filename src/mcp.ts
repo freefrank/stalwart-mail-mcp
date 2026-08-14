@@ -402,6 +402,37 @@ export function createMcpServer(env: JmapEnv): McpServer {
   );
 
   server.registerTool(
+    "list_identities",
+    {
+      title: "List sending identities (aliases)",
+      description:
+        "List the sending identities (aliases) this account may use as the From " +
+        "address, with their display names. When composing mail and the user has " +
+        "not said which sender to use, show them these options and ask — different " +
+        "aliases carry different signatures and purposes; do not guess.",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const session = await getSession(env);
+        const identities = await fetchIdentities(env);
+        return ok(
+          identities.map((i) => ({
+            email: i.email,
+            ...(i.name ? { name: i.name } : {}),
+            ...(i.email.toLowerCase() === session.username.toLowerCase()
+              ? { default: true }
+              : {}),
+          })),
+        );
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
     "create_draft",
     {
       title: "Create a draft (does NOT send)",
@@ -422,7 +453,8 @@ export function createMcpServer(env: JmapEnv): McpServer {
           .describe(
             "Sender address. Must be one of the account's configured sending " +
               "identities (aliases) — anything else is rejected with the legal list. " +
-              "Default: the account's primary address.",
+              "Discover them with list_identities; if the user did not specify a " +
+              "sender, ask them which to use. Default: the account's primary address.",
           ),
         subject: z.string().describe("Subject line"),
         body: z.string().describe("Plain-text body"),

@@ -19,6 +19,7 @@ agent ──Streamable HTTP (OAuth or bearer)──▶ Cloudflare Worker ──H
 | `search_mail` | Full-text / sender / mailbox / date / attachment / unread filters, newest-first summaries (≤50) |
 | `read_mail` | One full message — prefers `textBody`, converts HTML to text, truncates at 50k chars, attachments as metadata only |
 | `list_mailboxes` | Mailbox tree with roles, totals, unread counts |
+| `list_identities` | The account's sending identities (aliases) with display names; the default is flagged. The agent is told to ask which to use, not guess |
 | `create_draft` | Writes a draft to Drafts and echoes it back for review — **never sends**. Optional `from` selects any of the account's sending identities (aliases) |
 | `send_draft` | Sends a draft **by id** via JMAP `EmailSubmission`, then files it Drafts → Sent |
 
