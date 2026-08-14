@@ -6,6 +6,7 @@ import {
   verifyToken,
   pkceMatches,
   isAllowedRedirect,
+  parseExtraRedirects,
   handleRegister,
   handleAuthorizePost,
   handleToken,
@@ -87,16 +88,37 @@ describe("isAllowedRedirect", () => {
     expect(isAllowedRedirect("https://claude.com/api/mcp/auth_callback")).toBe(true);
   });
 
-  it("accepts Claude Code loopback on any port", () => {
-    expect(isAllowedRedirect("http://localhost:3118/callback")).toBe(true);
-    expect(isAllowedRedirect("http://127.0.0.1:49152/callback")).toBe(true);
+  it("accepts loopback on any port and any path (native agents differ)", () => {
+    expect(isAllowedRedirect("http://localhost:3118/callback")).toBe(true); // Claude Code
+    expect(isAllowedRedirect("http://localhost:1455/auth/callback")).toBe(true); // Codex CLI
+    expect(isAllowedRedirect("http://127.0.0.1:49152/anything")).toBe(true);
+  });
+
+  it("accepts operator-configured extras by exact match only", () => {
+    const extra = ["https://chatgpt.com/connector_platform_oauth_redirect"];
+    expect(isAllowedRedirect(extra[0]!, extra)).toBe(true);
+    expect(isAllowedRedirect("https://chatgpt.com/other", extra)).toBe(false);
+    expect(isAllowedRedirect(extra[0]!)).toBe(false); // not without config
   });
 
   it("rejects everything else", () => {
     expect(isAllowedRedirect("https://evil.example/api/mcp/auth_callback")).toBe(false);
     expect(isAllowedRedirect("https://claude.ai/other/path")).toBe(false);
-    expect(isAllowedRedirect("http://localhost:3118/other")).toBe(false);
+    expect(isAllowedRedirect("http://192.168.1.1/callback")).toBe(false); // non-loopback http
     expect(isAllowedRedirect("not a url")).toBe(false);
+  });
+});
+
+describe("parseExtraRedirects", () => {
+  it("splits on commas/whitespace and keeps only valid https URLs", () => {
+    expect(
+      parseExtraRedirects("https://a.example/cb, https://b.example/cb\n not-a-url http://c.example/cb"),
+    ).toEqual(["https://a.example/cb", "https://b.example/cb"]);
+  });
+
+  it("returns empty for unset config", () => {
+    expect(parseExtraRedirects(undefined)).toEqual([]);
+    expect(parseExtraRedirects("")).toEqual([]);
   });
 });
 

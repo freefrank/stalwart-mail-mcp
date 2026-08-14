@@ -28,11 +28,18 @@ import {
   handleToken,
   verifyAccessToken,
   unauthorized,
+  parseExtraRedirects,
 } from "./oauth.js";
 
 export interface Env {
   /** Stalwart JMAP origin, e.g. https://mail.example.com (wrangler.jsonc vars). */
   STALWART_ORIGIN: string;
+  /**
+   * Optional: extra OAuth callback URLs (comma-separated, https) for hosted
+   * agents beyond Claude — e.g. ChatGPT connectors. Loopback and Claude's
+   * callback are always allowed.
+   */
+  OAUTH_ALLOWED_REDIRECTS?: string;
   STALWART_USER: string;
   STALWART_PASS: string;
   MCP_BEARER_TOKEN: string;
@@ -56,9 +63,13 @@ app.get("/.well-known/oauth-protected-resource", (c) =>
 );
 app.get("/.well-known/oauth-authorization-server", (c) => c.json(authServerMetadata(origin(c))));
 
-app.post("/register", (c) => handleRegister(c.req.raw, c.env.MCP_BEARER_TOKEN));
-app.get("/authorize", (c) => handleAuthorizeGet(c.req.raw));
-app.post("/authorize", (c) => handleAuthorizePost(c.req.raw, c.env.MCP_BEARER_TOKEN, compareSecret));
+const extras = (c: { env: Env }) => parseExtraRedirects(c.env.OAUTH_ALLOWED_REDIRECTS);
+
+app.post("/register", (c) => handleRegister(c.req.raw, c.env.MCP_BEARER_TOKEN, extras(c)));
+app.get("/authorize", (c) => handleAuthorizeGet(c.req.raw, extras(c)));
+app.post("/authorize", (c) =>
+  handleAuthorizePost(c.req.raw, c.env.MCP_BEARER_TOKEN, compareSecret, extras(c)),
+);
 app.post("/token", (c) => handleToken(c.req.raw, c.env.MCP_BEARER_TOKEN));
 
 // --- MCP endpoint ----------------------------------------------------------

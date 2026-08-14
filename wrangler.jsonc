@@ -15,6 +15,11 @@
     // often NOT the webmail host — verify with:
     //   curl -sI https://<host>/.well-known/jmap   → expect 307 → /jmap/session
     "STALWART_ORIGIN": "https://mail.example.com"
+    // Extra OAuth callback URLs for hosted agents beyond Claude (comma-
+    // separated, https, exact match). Claude's callback and localhost
+    // loopback are always allowed. A rejected agent's /authorize error page
+    // shows the exact URL to paste here.
+    // ,"OAUTH_ALLOWED_REDIRECTS": "https://chatgpt.com/connector_platform_oauth_redirect"
   },
   "observability": {
     // Logs enabled for ops visibility. Code never logs mail content,

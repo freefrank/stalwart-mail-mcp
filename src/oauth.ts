@@ -1,23 +1,26 @@
 /**
- * Stateless OAuth 2.1 authorization server for the claude.ai custom connector.
+ * Stateless OAuth 2.1 authorization server for hosted-agent connectors.
  *
- * claude.ai's "Add custom connector" flow only speaks MCP-spec OAuth (the
- * static request-header option is a gated beta as of 2026-08), so this module
- * implements the minimum the hosted Claude surfaces require:
+ * Hosted agents (claude.ai custom connectors, ChatGPT connectors, …) only
+ * speak MCP-spec OAuth — they have no "paste a bearer token" field — so this
+ * module implements the minimum that profile requires:
  *
  *   - RFC 9728 protected-resource metadata + RFC 8414 AS metadata discovery
  *   - RFC 7591 dynamic client registration (public clients only)
  *   - /authorize with mandatory PKCE S256, /token accepting form-urlencoded
- *   - refresh tokens (Claude appends offline_access when advertised)
+ *   - refresh tokens (agents append offline_access when advertised)
+ *
+ * Header-capable clients (Claude Code, Codex CLI, Cursor, MCP Inspector, …)
+ * can skip all of this and send the static bearer directly.
  *
  * Everything is stateless: codes/tokens/client ids are HMAC-signed blobs, no
- * KV or Durable Objects (spec §5.2). The signing key is derived from
- * MCP_BEARER_TOKEN, so rotating that one secret revokes every OAuth session
- * at once — the single-user revocation lever.
+ * KV or Durable Objects. The signing key is derived from MCP_BEARER_TOKEN,
+ * so rotating that one secret revokes every OAuth session at once — the
+ * single-user revocation lever.
  *
  * Single-user consent model: /authorize asks for the connector password,
- * which IS the MCP_BEARER_TOKEN (CREDENTIALS.md §6). Whoever holds it could
- * call /mcp directly anyway, so the consent gate adds no new trust boundary.
+ * which IS the MCP_BEARER_TOKEN. Whoever holds it could call /mcp directly
+ * anyway, so the consent gate adds no new trust boundary.
  *
  * Accepted stateless tradeoffs (fine for one user, documented on purpose):
  *   - Authorization codes are not single-use; they expire in 2 minutes and
@@ -117,11 +120,34 @@ export async function pkceMatches(verifier: string, challenge: string): Promise<
 // -------------------------------------------------------- redirect allowlist
 
 /**
- * Only Claude's callbacks are ever legal, regardless of what a client
- * registers (spec: hosted surfaces use the claude.ai callback; Claude Code
- * uses RFC 8252 loopback on an ephemeral port, which must match port-agnostic).
+ * Parse the OAUTH_ALLOWED_REDIRECTS config var: extra callback URLs for
+ * agents other than Claude, comma- or whitespace-separated, https only
+ * (loopback is already built in). Invalid entries are dropped silently —
+ * a typo must not open the list up.
  */
-export function isAllowedRedirect(uri: string): boolean {
+export function parseExtraRedirects(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .filter((s) => {
+      try {
+        return new URL(s).protocol === "https:";
+      } catch {
+        return false;
+      }
+    });
+}
+
+/**
+ * Callbacks that may receive authorization codes, regardless of what a
+ * client registers:
+ *   - Claude's hosted callback (verified against production)
+ *   - RFC 8252 loopback on any port AND any path — native agents differ
+ *     (Claude Code /callback, Codex CLI /auth/callback, …), and a loopback
+ *     listener is by definition under the local user's control
+ *   - operator-configured extras (exact URL match), for other hosted agents
+ */
+export function isAllowedRedirect(uri: string, extra: string[] = []): boolean {
   let u: URL;
   try {
     u = new URL(uri);
@@ -129,15 +155,16 @@ export function isAllowedRedirect(uri: string): boolean {
     return false;
   }
   if (u.protocol === "https:") {
-    return (
+    if (
       (u.hostname === "claude.ai" || u.hostname === "claude.com") &&
       u.pathname === "/api/mcp/auth_callback"
-    );
+    ) {
+      return true;
+    }
+    return extra.includes(uri);
   }
   if (u.protocol === "http:") {
-    return (
-      (u.hostname === "localhost" || u.hostname === "127.0.0.1") && u.pathname === "/callback"
-    );
+    return u.hostname === "localhost" || u.hostname === "127.0.0.1";
   }
   return false;
 }
@@ -178,7 +205,11 @@ export function authServerMetadata(origin: string): Record<string, unknown> {
 
 // ---------------------------------------------------------------- register
 
-export async function handleRegister(req: Request, secret: string): Promise<Response> {
+export async function handleRegister(
+  req: Request,
+  secret: string,
+  extraRedirects: string[] = [],
+): Promise<Response> {
   let body: { redirect_uris?: unknown };
   try {
     body = await req.json();
@@ -186,10 +217,11 @@ export async function handleRegister(req: Request, secret: string): Promise<Resp
     return oauthError("invalid_client_metadata", "body must be JSON", 400);
   }
   const uris = Array.isArray(body.redirect_uris) ? body.redirect_uris.filter((u): u is string => typeof u === "string") : [];
-  if (!uris.length || !uris.every(isAllowedRedirect)) {
+  if (!uris.length || !uris.every((u) => isAllowedRedirect(u, extraRedirects))) {
     return oauthError(
       "invalid_redirect_uri",
-      "only the Claude callback URLs are accepted by this server",
+      "redirect_uris not in this server's allowlist — add your agent's callback " +
+        "URL to the OAUTH_ALLOWED_REDIRECTS var (see README)",
       400,
     );
   }
@@ -222,10 +254,23 @@ interface AuthorizeParams {
   scope: string;
 }
 
-function readAuthorizeParams(src: URLSearchParams): { ok: true; p: AuthorizeParams } | { ok: false; err: string } {
+function readAuthorizeParams(
+  src: URLSearchParams,
+  extraRedirects: string[],
+): { ok: true; p: AuthorizeParams } | { ok: false; err: string } {
   if ((src.get("response_type") ?? "code") !== "code") return { ok: false, err: "response_type must be code" };
   const redirect_uri = src.get("redirect_uri") ?? "";
-  if (!isAllowedRedirect(redirect_uri)) return { ok: false, err: "redirect_uri is not a Claude callback" };
+  if (!isAllowedRedirect(redirect_uri, extraRedirects)) {
+    // Echo the URI so the operator can copy it straight into config — this
+    // is the onboarding path for a not-yet-known agent. Plain text, no HTML.
+    return {
+      ok: false,
+      err:
+        `redirect_uri is not in this server's allowlist:\n  ${redirect_uri}\n` +
+        `To allow this agent, add that exact URL to the OAUTH_ALLOWED_REDIRECTS ` +
+        `var in wrangler.jsonc and redeploy.`,
+    };
+  }
   const code_challenge = src.get("code_challenge") ?? "";
   if (!/^[A-Za-z0-9_-]{43}$/.test(code_challenge)) return { ok: false, err: "S256 code_challenge required" };
   if ((src.get("code_challenge_method") ?? "S256") !== "S256") return { ok: false, err: "only S256 is supported" };
@@ -263,8 +308,8 @@ function consentPage(p: AuthorizeParams, errorMsg?: string): Response {
 </style></head><body>
   <div class="card">
     <h1 style="font-size:1.2rem;margin-top:0">Authorize mail access</h1>
-    <p>After you approve, the browser returns to <span class="host">${esc(host)}</span> and Claude
-    gains read/draft/send access to the connected mailbox.</p>
+    <p>After you approve, the browser returns to <span class="host">${esc(host)}</span> and the
+    connecting agent gains read/draft/send access to the connected mailbox.</p>
     ${errorMsg ? `<p class="err">${esc(errorMsg)}</p>` : ""}
     <form method="post" action="/authorize">
       ${hidden}
@@ -281,8 +326,8 @@ function consentPage(p: AuthorizeParams, errorMsg?: string): Response {
   });
 }
 
-export function handleAuthorizeGet(req: Request): Response {
-  const r = readAuthorizeParams(new URL(req.url).searchParams);
+export function handleAuthorizeGet(req: Request, extraRedirects: string[] = []): Response {
+  const r = readAuthorizeParams(new URL(req.url).searchParams, extraRedirects);
   if (!r.ok) return new Response(r.err, { status: 400 });
   return consentPage(r.p);
 }
@@ -291,9 +336,10 @@ export async function handleAuthorizePost(
   req: Request,
   secret: string,
   compareSecret: (candidate: string, expected: string) => Promise<boolean>,
+  extraRedirects: string[] = [],
 ): Promise<Response> {
   const form = new URLSearchParams(await req.text());
-  const r = readAuthorizeParams(form);
+  const r = readAuthorizeParams(form, extraRedirects);
   if (!r.ok) return new Response(r.err, { status: 400 });
   const password = form.get("password") ?? "";
   if (!(await compareSecret(password, secret))) {
