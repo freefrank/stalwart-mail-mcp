@@ -19,7 +19,7 @@ agent ──Streamable HTTP (OAuth or bearer)──▶ Cloudflare Worker ──H
 | `search_mail` | Full-text / sender / mailbox / date / attachment / unread filters, newest-first summaries (≤50) |
 | `read_mail` | One full message — prefers `textBody`, converts HTML to text, truncates at 50k chars, attachments as metadata only |
 | `list_mailboxes` | Mailbox tree with roles, totals, unread counts |
-| `create_draft` | Writes a draft to Drafts and echoes it back for review — **never sends** |
+| `create_draft` | Writes a draft to Drafts and echoes it back for review — **never sends**. Optional `from` selects any of the account's sending identities (aliases) |
 | `send_draft` | Sends a draft **by id** via JMAP `EmailSubmission`, then files it Drafts → Sent |
 
 ### Why sending is two steps
@@ -203,6 +203,9 @@ standard OAuth profile (RFC 8414/9728/7591 + S256 PKCE + form-urlencoded
 - **Outbound host pinned.** Requests go only to `STALWART_ORIGIN`; a JMAP
   session advertising a foreign `apiUrl` is refused. Nothing from tool
   arguments ever becomes a host.
+- **From is identity-constrained.** The optional `from` on `create_draft` must
+  match one of the account's JMAP identities — aliases work, arbitrary
+  spoofing does not. Rejections list the legal addresses.
 - **Untrusted-content fencing.** Mail bodies and previews are wrapped in
   explicit fences marking them as external untrusted data.
 - **Quiet logs.** No mail content, no recipient addresses, no tokens.

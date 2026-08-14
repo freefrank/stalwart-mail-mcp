@@ -76,6 +76,24 @@ export function buildSearchFilter(args: {
   return f;
 }
 
+interface Identity {
+  id: string;
+  email: string;
+  name?: string | null;
+}
+
+/** The account's sending identities — the only legal From addresses. */
+async function fetchIdentities(env: JmapEnv): Promise<Identity[]> {
+  const session = await getSession(env);
+  const responses = await jmapCall(
+    env,
+    [["Identity/get", { accountId: session.accountId, ids: null }, "i"]],
+    [JMAP_SUBMISSION],
+  );
+  const { list } = pickResponse<{ list: Identity[] }>(responses, "Identity/get", "i");
+  return list;
+}
+
 async function fetchMailboxes(env: JmapEnv): Promise<Mailbox[]> {
   const session = await getSession(env);
   const responses = await jmapCall(env, [
@@ -398,6 +416,14 @@ export function createMcpServer(env: JmapEnv): McpServer {
         to: z.array(z.string()).min(1).describe("Recipient email addresses"),
         cc: z.array(z.string()).optional().describe("CC addresses"),
         bcc: z.array(z.string()).optional().describe("BCC addresses"),
+        from: z
+          .string()
+          .optional()
+          .describe(
+            "Sender address. Must be one of the account's configured sending " +
+              "identities (aliases) — anything else is rejected with the legal list. " +
+              "Default: the account's primary address.",
+          ),
         subject: z.string().describe("Subject line"),
         body: z.string().describe("Plain-text body"),
         in_reply_to: z
@@ -450,11 +476,30 @@ export function createMcpServer(env: JmapEnv): McpServer {
           }
         }
 
-        const fromEmail = session.username.includes("@") ? session.username : undefined;
+        // From defaults to the login identity; an explicit `from` must match
+        // one of the account's JMAP identities — the server-enforced boundary
+        // that allows aliases without allowing arbitrary spoofing. send_draft
+        // later picks the matching identityId off the draft's From.
+        let fromEmail = session.username.includes("@") ? session.username : undefined;
+        let fromName: string | undefined;
+        if (args.from) {
+          const identities = await fetchIdentities(env);
+          const hit = identities.find(
+            (i) => i.email.toLowerCase() === args.from!.trim().toLowerCase(),
+          );
+          if (!hit) {
+            throw new ToolInputError(
+              `"${args.from}" is not one of the account's sending identities. ` +
+                `Legal From addresses: ${identities.map((i) => i.email).join(", ")}`,
+            );
+          }
+          fromEmail = hit.email;
+          fromName = hit.name ?? undefined;
+        }
         const creation: Record<string, unknown> = {
           mailboxIds: { [drafts.id]: true },
           keywords: { $draft: true },
-          ...(fromEmail ? { from: [{ email: fromEmail }] } : {}),
+          ...(fromEmail ? { from: [{ email: fromEmail, ...(fromName ? { name: fromName } : {}) }] } : {}),
           to: args.to.map((email) => ({ email })),
           ...(args.cc?.length ? { cc: args.cc.map((email) => ({ email })) } : {}),
           ...(args.bcc?.length ? { bcc: args.bcc.map((email) => ({ email })) } : {}),
