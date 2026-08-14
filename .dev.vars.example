@@ -1,0 +1,4 @@
+STALWART_ORIGIN=https://mail.example.com
+STALWART_USER=mcp@example.com
+STALWART_PASS=app-password-here
+MCP_BEARER_TOKEN=generate-with-openssl-rand-base64-33

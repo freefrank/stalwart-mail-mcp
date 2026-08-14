@@ -1,0 +1,29 @@
+{
+  // Stalwart JMAP → MCP connector. Stateless by design (MCP 2026-07-28):
+  // no Durable Objects, no KV — do not add them.
+  "name": "stalwart-mail-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  // Required: the MCP SDK pulls in Node built-ins.
+  "compatibility_flags": ["nodejs_compat"],
+  // workers.dev works fine for trying it out. For production prefer a custom
+  // domain (uncomment routes below) — nicer for WAF rules and migration.
+  "workers_dev": true,
+  // "routes": [{ "pattern": "mcp.example.com", "custom_domain": true }],
+  "vars": {
+    // The Stalwart HTTP origin serving JMAP. On multi-service stacks this is
+    // often NOT the webmail host — verify with:
+    //   curl -sI https://<host>/.well-known/jmap   → expect 307 → /jmap/session
+    "STALWART_ORIGIN": "https://mail.example.com"
+  },
+  "observability": {
+    // Logs enabled for ops visibility. Code never logs mail content,
+    // recipient addresses, or tokens.
+    "enabled": true
+  }
+  // Secrets (set via `wrangler secret put`, never here):
+  //   STALWART_USER      — dedicated JMAP account or login
+  //   STALWART_PASS      — its app password (never the account password)
+  //   MCP_BEARER_TOKEN   — CSPRNG ≥32 bytes; static bearer AND the OAuth
+  //                        consent password / token-signing root
+}
